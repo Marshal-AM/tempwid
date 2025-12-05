@@ -1404,15 +1404,124 @@ async def upload_guardrails(request: GuardrailsRequest):
 async def get_guardrails():
     """
     Get all currently stored guardrails (question-answer pairs).
+    Returns guardrails with their indices for easy deletion.
     """
     with guardrails_lock:
+        # Include index with each guardrail for easier deletion
+        guardrails_with_index = [
+            {
+                "index": idx,
+                "question": guardrail.get("question", ""),
+                "answer": guardrail.get("answer", "")
+            }
+            for idx, guardrail in enumerate(guardrails_storage)
+        ]
+        
         return JSONResponse(
             content={
                 "status": "success",
-                "guardrails": guardrails_storage.copy(),
+                "guardrails": guardrails_with_index,
                 "count": len(guardrails_storage)
             }
         )
+
+
+@app.delete("/guardrails/{index}")
+async def delete_guardrail_by_index(index: int):
+    """
+    Delete a specific guardrail by its index (0-based).
+    
+    Use GET /guardrails first to see the list of guardrails and their indices.
+    """
+    try:
+        with guardrails_lock:
+            if index < 0 or index >= len(guardrails_storage):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Guardrail at index {index} not found. There are {len(guardrails_storage)} guardrail(s) (indices 0-{len(guardrails_storage)-1 if guardrails_storage else 0})."
+                )
+            
+            deleted_guardrail = guardrails_storage.pop(index)
+            logger.info(f"Deleted guardrail at index {index}: {deleted_guardrail.get('question', '')[:50]}...")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": f"Successfully deleted guardrail at index {index}",
+                "deleted_guardrail": deleted_guardrail
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting guardrail: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+class DeleteGuardrailRequest(BaseModel):
+    question: str
+
+
+@app.post("/guardrails/delete")
+async def delete_guardrail_by_question(request: DeleteGuardrailRequest):
+    """
+    Delete a guardrail by matching the question text (case-insensitive, partial match supported).
+    
+    Request body:
+    {
+        "question": "What is your refund policy?"
+    }
+    
+    This will find and delete the first guardrail whose question matches (case-insensitive).
+    """
+    try:
+        question_to_delete = request.question.strip()
+        if not question_to_delete:
+            raise HTTPException(status_code=400, detail="Question cannot be empty")
+        
+        with guardrails_lock:
+            deleted_index = None
+            deleted_guardrail = None
+            
+            # Find the guardrail by matching question (case-insensitive)
+            for idx, guardrail in enumerate(guardrails_storage):
+                if guardrail.get("question", "").strip().lower() == question_to_delete.lower():
+                    deleted_index = idx
+                    deleted_guardrail = guardrails_storage.pop(idx)
+                    break
+            
+            if deleted_index is None:
+                # Try partial match if exact match not found
+                for idx, guardrail in enumerate(guardrails_storage):
+                    guardrail_question = guardrail.get("question", "").strip().lower()
+                    if question_to_delete.lower() in guardrail_question or guardrail_question in question_to_delete.lower():
+                        deleted_index = idx
+                        deleted_guardrail = guardrails_storage.pop(idx)
+                        break
+            
+            if deleted_index is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No guardrail found matching question: '{request.question}'. Use GET /guardrails to see all available guardrails."
+                )
+            
+            logger.info(f"Deleted guardrail at index {deleted_index} matching question: {question_to_delete[:50]}...")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": f"Successfully deleted guardrail matching question",
+                "deleted_guardrail": deleted_guardrail,
+                "deleted_index": deleted_index
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting guardrail by question: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.delete("/guardrails")
@@ -1456,4 +1565,3 @@ if __name__ == "__main__":
     
     # Start the FastAPI server
     uvicorn.run(app, host="0.0.0.0", port=port)
-    
