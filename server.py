@@ -1023,7 +1023,7 @@ async def run_bot(room_url: str, token: str):
                 vad_analyzer=SileroVADAnalyzer(
                     params=VADParams(
                         stop_secs=0.3,
-                        min_volume=0.5,
+                        min_volume=0.3,
                     )
                 ),
                 transcription_enabled=True,
